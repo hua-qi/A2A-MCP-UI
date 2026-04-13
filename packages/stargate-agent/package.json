@@ -1,0 +1,7 @@
+{
+  "name": "stargate-agent",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "uv run python -m stargate_agent.main"
+  }
+}

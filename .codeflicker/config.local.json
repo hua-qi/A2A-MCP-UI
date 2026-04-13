@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "EnterPlanMode",
+      "Write(/docs/designs/**)",
+      "mcp__xp-local-mcp__search_experience",
+      "docs_write",
+      "mcp__xp-local-mcp__save_experience",
+      "Edit(/packages/stargate-agent/src/stargate_agent/**)",
+      "Fetch(domain:a2a-protocol.org)",
+      "google_search",
+      "Fetch(domain:raw.githubusercontent.com)",
+      "Write(/docs/plans/**)",
+      "Write(/packages/codeflicker-agent/src/codeflicker_agent/**)",
+      "Write(/packages/stargate-agent/src/stargate_agent/**)"
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html style="margin:0;padding:0;width:100%;height:100%;">
+
+<head>
+    <meta charset="UTF-8" />
+</head>
+
+<body style="margin:0;padding:0;width:100%;height:100%;">
+    <script>
+        var appIframe = null;
+
+        window.addEventListener('message', function (e) {
+            var msg = e.data;
+            if (!msg || msg.jsonrpc !== '2.0') return;
+            var isRequest = !!msg.method;
+            var isResponse = (msg.id !== undefined) && ('result' in msg || 'error' in msg);
+            if (!isRequest && !isResponse) return;
+
+            if (msg.method === 'ui/notifications/sandbox-resource-ready') {
+                var html = msg.params && msg.params.html;
+                if (!html) return;
+
+                if (appIframe) {
+                    document.body.removeChild(appIframe);
+                }
+
+                appIframe = document.createElement('iframe');
+                appIframe.style.width = '100%';
+                appIframe.style.height = '100%';
+                appIframe.style.border = 'none';
+                appIframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+
+                var blob = new Blob([html], { type: 'text/html' });
+                appIframe.src = URL.createObjectURL(blob);
+                document.body.appendChild(appIframe);
+
+                appIframe.addEventListener('load', function () {
+                    appIframe.contentWindow.postMessage(msg, '*');
+                });
+                return;
+            }
+
+            if (e.source === window.parent && appIframe && appIframe.contentWindow) {
+                appIframe.contentWindow.postMessage(msg, '*');
+                return;
+            }
+
+            if (appIframe && e.source === appIframe.contentWindow) {
+                window.parent.postMessage(msg, '*');
+                return;
+            }
+        });
+
+        window.parent.postMessage({
+            jsonrpc: '2.0',
+            method: 'ui/notifications/sandbox-proxy-ready',
+            params: {}
+        }, '*');
+    </script>
+</body>
+
+</html>

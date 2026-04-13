@@ -1,0 +1,7 @@
+{
+  "name": "stargate-mcp-ui-server",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "PORT=3005 uv run python -m stargate_mcp_ui_server.main"
+  }
+}

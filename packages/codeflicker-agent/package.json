@@ -1,0 +1,7 @@
+{
+  "name": "codeflicker-agent",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "uv run python -m codeflicker_agent.main"
+  }
+}

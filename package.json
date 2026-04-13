@@ -1,0 +1,9 @@
+{
+  "name": "a2a-mcpui",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --stream -r run dev",
+    "build": "pnpm -r run build"
+  },
+  "engines": { "node": ">=20" }
+}
