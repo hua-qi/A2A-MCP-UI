@@ -426,7 +426,7 @@ Content-Type: application/json
 
 ### 5.3 SG-Agent → CF-Agent 响应（endpoint 模式）
 
-SG-Agent 处理完成后，将 `mcp_ui_resource` 扩展字段嵌入 TextContent 的 `text` 返回。这是 MCP-UI 协议进入 A2A 链路的**注入点**：
+SG-Agent 处理完成后，通过标准 A2A 双 part 结构返回。这是 MCP-UI 协议进入 A2A 链路的**注入点**：
 
 ```json
 {
@@ -439,7 +439,28 @@ SG-Agent 处理完成后，将 `mcp_ui_resource` 扩展字段嵌入 TextContent 
       "contextId": "ctx-session-abc",
       "parts": [
         {
-          "text": "{\"text\": \"已为您查询快手历年员工趋势数据，共 5 年记录。\", \"mcp_ui_resource\": {\"kind\": \"mcp_ui_resource\", \"resourceUri\": \"ui://stargate/card/550e8400-e29b-41d4-a716-446655440000\", \"toolName\": \"query_employee_trend\", \"toolResult\": {\"content\": [{\"type\": \"text\", \"text\": \"已为您查询快手历年员工趋势数据，共 5 年记录。\"}], \"data\": [{\"year\": 2019, \"count\": 7000}, {\"year\": 2020, \"count\": 10000}, {\"year\": 2021, \"count\": 16000}, {\"year\": 2022, \"count\": 22000}, {\"year\": 2023, \"count\": 18000}], \"token\": \"mock-stargate-token-12345\"}, \"uiMetadata\": {\"preferred-frame-size\": {\"width\": 560, \"height\": 420}}}}"
+          "text": "已为您查询快手历年员工趋势数据，共 5 年记录。"
+        },
+        {
+          "data": {
+            "kind": "mcp_ui_resource",
+            "resourceUri": "ui://stargate/card/550e8400-e29b-41d4-a716-446655440000",
+            "toolName": "query_employee_trend",
+            "toolResult": {
+              "content": [{ "type": "text", "text": "已为您查询快手历年员工趋势数据，共 5 年记录。" }],
+              "data": [
+                { "year": 2019, "count": 7000 },
+                { "year": 2020, "count": 10000 },
+                { "year": 2021, "count": 16000 },
+                { "year": 2022, "count": 22000 },
+                { "year": 2023, "count": 18000 }
+              ],
+              "token": "mock-stargate-token-12345"
+            },
+            "uiMetadata": { "preferred-frame-size": { "width": 560, "height": 420 } }
+          },
+          "mediaType": "application/json",
+          "metadata": { "extension": "https://stargate.example.com/ext/mcp-ui-resource/v1" }
         }
       ]
     }
@@ -447,7 +468,7 @@ SG-Agent 处理完成后，将 `mcp_ui_resource` 扩展字段嵌入 TextContent 
 }
 ```
 
-CF-Agent 解析 `text` 字段后，将其拆分为两个独立 part 返回给前端：
+CF-Agent 遍历 `parts[]`，按字段类型路由后返回给前端：
 
 ```json
 {
@@ -514,6 +535,7 @@ A2A 响应结构与 endpoint 模式相同，仅 `resourceUri` 不同——指向
 
 ② CF-Agent：LLM 意图识别 → "query_data"
    A2A  POST http://localhost:3011/message
+   Header: A2A-Extensions: https://stargate.example.com/ext/mcp-ui-resource/v1
    {
      "method": "message/send",
      "params": {
@@ -534,7 +556,18 @@ A2A 响应结构与 endpoint 模式相同，仅 `resourceUri` 不同——指向
 
    card_cache.put(...)  → cardInstanceId = "550e8400-..."
 
-   A2A 响应：{ "mcp_ui_resource": { "resourceUri": "ui://stargate/card/550e8400-..." } }
+   A2A 响应（双 part，回显 Header）：
+   Header: A2A-Extensions: https://stargate.example.com/ext/mcp-ui-resource/v1
+   {
+     "parts": [
+       { "text": "已为您查询快手历年员工趋势数据，共 5 年记录。" },
+       {
+         "data": { "kind": "mcp_ui_resource", "resourceUri": "ui://stargate/card/550e8400-..." },
+         "mediaType": "application/json",
+         "metadata": { "extension": "https://stargate.example.com/ext/mcp-ui-resource/v1" }
+       }
+     ]
+   }
 
 ④ CF-Agent 透传 → /chat HTTP 响应
    { "parts": [ {kind:"text",...}, {kind:"mcp_ui_resource", resourceUri:"ui://stargate/card/550e8400-..."} ] }
@@ -636,28 +669,32 @@ AppRenderer.onMessage → CardMessage.onMessage → App.sendMessage()
 
 ### 5.6 协议扩展说明
 
-本项目对标准 A2A 的 Part 结构做了**最小化扩展**，将 MCP-UI 的 `mcp_ui_resource` 嵌入 `text` part，对应关系如下：
+本项目将 `mcp_ui_resource` 实现为标准 A2A `data` part，与 MCP-UI 字段的对应关系如下：
 
-| 标准 A2A Part 字段 | 本项目用法 |
+| A2A data part 字段 | 本项目用法 |
 |---|---|
-| `text` | 承载 JSON 字符串，包含 `text` + `mcp_ui_resource` 两个 key |
-| `mcp_ui_resource.resourceUri` | 对齐 MCP-UI 的 `ui://` URI 规范 |
-| `mcp_ui_resource.toolResult` | 对应 MCP-UI `AppRenderer` 的 `toolResult` prop |
-| `mcp_ui_resource.uiMetadata` | 对应 MCP-UI `createUIResource` 的 `uiMetadata` 参数 |
+| `data.kind` | 固定值 `"mcp_ui_resource"`，用于客户端路由识别 |
+| `data.resourceUri` | 对齐 MCP-UI 的 `ui://` URI 规范 |
+| `data.toolResult` | 对应 MCP-UI `AppRenderer` 的 `toolResult` prop |
+| `data.uiMetadata` | 对应 MCP-UI `createUIResource` 的 `uiMetadata` 参数 |
+| `mediaType` | 固定值 `"application/json"` |
+| `metadata.extension` | 声明所属扩展 URI，便于多扩展共存时路由 |
 
-若按 A2A 规范的 `data` part 来扩展，等价写法为：
+---
 
-```json
-{
-  "data": {
-    "kind": "mcp_ui_resource",
-    "resourceUri": "ui://stargate/card/550e8400-...",
-    "toolResult": { ... },
-    "uiMetadata": { "preferred-frame-size": { "width": 560, "height": 420 } }
-  },
-  "mediaType": "application/json"
-}
-```
+### 5.7 扩展规范文档与 A2A 治理规范映射
+
+本项目将 `mcp_ui_resource` 定义为正式 A2A 扩展，规范文档位于：
+`ext-mcp-ui-resource/spec.md`
+
+| A2A 治理要求 | 本项目做法 |
+|---|---|
+| URI 唯一标识 | `https://stargate.example.com/ext/mcp-ui-resource/v1` |
+| 规范托管在 URI | `ext-mcp-ui-resource/spec.md`（生产环境应部署到对应域名） |
+| AgentCard 声明 | `capabilities.extensions[]` 中声明 uri、description、required |
+| 激活协商 | 请求带 `A2A-Extensions` Header，响应回显已激活 URI |
+| Breaking change 换 URI | 字段变更升级到 `/v2`，不允许原地修改 |
+| `required: false` | 不支持扩展的客户端降级为纯文本，不影响基础调用 |
 
 ---
 

@@ -40,6 +40,18 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_github",
+            "description": "打开 GitHub 主页，在卡片中以 iframe 方式展示 GitHub 网站",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 async def select_tool(user_message: str) -> tuple[str, dict]:

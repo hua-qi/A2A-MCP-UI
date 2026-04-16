@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --parallel --stream -r run dev",
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "kill-dev": "lsof -ti :3000,:3001,:3002,:3003,:3004,:3005 | xargs -r kill -9; pkill -f 'codeflicker_agent.main' ; pkill -f 'stargate_agent.main' ; pkill -f 'stargate_mcp_ui_server.main' ; echo 'All dev processes killed'"
   },
   "engines": { "node": ">=20" }
 }

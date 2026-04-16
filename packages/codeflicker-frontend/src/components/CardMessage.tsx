@@ -19,13 +19,13 @@ export const CardMessage: React.FC<Props> = ({
   onMessage,
   onLayout,
 }) => {
-  const { width = 560 } = uiMetadata?.['preferred-frame-size'] ?? {};
+  const { width = 560, height: preferredHeight } = uiMetadata?.['preferred-frame-size'] ?? {};
   const sandboxUrl = new URL('/sandbox_proxy.html', window.location.href);
-  const [iframeHeight, setIframeHeight] = useState<number | undefined>(undefined);
+  const [iframeHeight, setIframeHeight] = useState<number | undefined>(preferredHeight);
   const rendererRef = useRef<any>(null);
 
   const handleCallTool = async (params: { name: string; arguments?: Record<string, unknown> }) => {
-    const res = await fetch('/tool-call', {
+    const res = await fetch('/a2a-tool-call', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ toolName: params.name, arguments: params.arguments ?? {} }),
@@ -36,7 +36,7 @@ export const CardMessage: React.FC<Props> = ({
 
   return (
     <div style={{
-      border: iframeHeight ? '1px solid #e0e0e0' : 'none',
+      border: (iframeHeight && iframeHeight > 0) ? '1px solid #e0e0e0' : 'none',
       borderRadius: 8,
       overflow: 'hidden',
       width,

@@ -12,7 +12,12 @@
       "Fetch(domain:raw.githubusercontent.com)",
       "Write(/docs/plans/**)",
       "Write(/packages/codeflicker-agent/src/codeflicker_agent/**)",
-      "Write(/packages/stargate-agent/src/stargate_agent/**)"
+      "Write(/packages/stargate-agent/src/stargate_agent/**)",
+      "Edit(/packages/codeflicker-frontend/**)",
+      "Fetch(domain:github.com)",
+      "Fetch(domain:pypi.org)",
+      "Edit(/package.json)",
+      "Fetch(domain:mcpui.dev)"
     ]
   }
 }

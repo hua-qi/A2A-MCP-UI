@@ -8,8 +8,13 @@ from mcp import ClientSession
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from python_a2a import A2AServer, Message, TextContent, MessageRole, AgentCard
 from mcp_ui_server import create_ui_resource
+from stargate_agent.agent_card_builder import build_agent_card
+from stargate_agent.a2a_server import create_a2a_app
+import uvicorn
+import threading
+
+A2A_PORT = 3011
 
 from stargate_agent import card_cache, llm, sse_logger
 from stargate_agent.shell_builder import MCP_INIT_SCRIPT
@@ -125,6 +130,28 @@ async def mcp_resources_read(uri: str):
             result={"count": len(contents)},
         )
         return JSONResponse({"contents": contents})
+
+    if uri == "ui://stargate/github":
+        resource = create_ui_resource({
+            "uri": uri,
+            "content": {
+                "type": "externalUrl",
+                "iframeUrl": "https://github.com",
+            },
+            "encoding": "text",
+        })
+        r = resource.model_dump(mode="json")
+        sse_logger.emit_response(
+            outer_span, "SG-Agent", "CF-Agent", "mcp-resources/read",
+            result={"uri": uri},
+        )
+        return JSONResponse({
+            "contents": [{
+                "uri": r["resource"]["uri"],
+                "mimeType": r["resource"]["mimeType"],
+                "text": r["resource"]["text"],
+            }]
+        })
 
     if uri.startswith("ui://stargate/card/"):
         card_id = uri.removeprefix("ui://stargate/card/")
@@ -245,162 +272,26 @@ async def _read_mcp_resource(uri: str) -> list:
                 for c in result.contents
             ]
 
-
-class StargateA2AServer(A2AServer):
-    def handle_message(self, message: Message) -> Message:
-        user_text = ""
-        mode = "endpoint"
-        if hasattr(message.content, "text"):
-            raw = message.content.text
-            try:
-                parsed = json.loads(raw)
-                user_text = parsed.get("text", raw)
-                mode = parsed.get("mode", "endpoint")
-            except (json.JSONDecodeError, AttributeError):
-                user_text = raw
-
-        sse_logger.emit("SG-Agent", "SG-LLM", "llm-call", f"tool selection (mode={mode})")
-        tool_name, tool_args = _run_async(llm.select_tool(user_text))
-
-        if tool_name == "query_employee_trend":
-            if mode == "mcp":
-                mcp_span = sse_logger.emit_request(
-                    "SG-Agent", "MCP-Server", "mcp-tool-call",
-                    params={"tool": "query_employee_trend"},
-                )
-                mcp_result = _run_async(_call_mcp_tool("query_employee_trend"))
-                resource_uri = mcp_result.get("_meta", {}).get("ui", {}).get("resourceUri", "ui://stargate/employee-trend")
-                sse_logger.emit_response(
-                    mcp_span, "MCP-Server", "SG-Agent", "mcp-tool-result",
-                    result={"resourceUri": resource_uri},
-                )
-                biz_span = sse_logger.emit_request("SG-Agent", "BusinessAPI", "http", params={"path": "GET /api/employee/trend"})
-                trend_resp = _run_async(_fetch_employee_trend())
-                sse_logger.emit_response(biz_span, "BusinessAPI", "SG-Agent", "http", result={"count": len(trend_resp.get("data", []))})
-                tool_result = {
-                    "content": [{"type": "text", "text": "已为您查询快手历年员工趋势数据，共 5 年记录。"}],
-                    "data": trend_resp["data"],
-                    "token": trend_resp["token"],
-                }
-            else:
-                rc_span = sse_logger.emit_request("SG-Agent", "ResourceCenter", "http", params={"path": "GET /api/components/EmployeeChart"})
-                component_info = _run_async(_fetch_component_info())
-                sse_logger.emit_response(rc_span, "ResourceCenter", "SG-Agent", "http", result={"componentName": component_info.get("componentName", "")})
-                biz_span = sse_logger.emit_request("SG-Agent", "BusinessAPI", "http", params={"path": "GET /api/employee/trend"})
-                trend_resp = _run_async(_fetch_employee_trend())
-                sse_logger.emit_response(biz_span, "BusinessAPI", "SG-Agent", "http", result={"count": len(trend_resp.get("data", []))})
-                card_id = card_cache.put(
-                    component_name=component_info["componentName"],
-                    container_name=component_info.get("containerName", component_info["componentName"]),
-                    remote_entry_url=component_info["remoteEntryUrl"],
-                    props={"data": trend_resp["data"]},
-                )
-                resource_uri = f"ui://stargate/card/{card_id}"
-                tool_result = {
-                    "content": [{"type": "text", "text": "已为您查询快手历年员工趋势数据，共 5 年记录。"}],
-                    "data": trend_resp["data"],
-                    "token": trend_resp["token"],
-                }
-
-            response_data = {
-                "text": "已为您查询快手历年员工趋势数据，共 5 年记录。",
-                "mcp_ui_resource": {
-                    "kind": "mcp_ui_resource",
-                    "resourceUri": resource_uri,
-                    "toolName": "query_employee_trend",
-                    "toolResult": tool_result,
-                    "uiMetadata": {
-                        "preferred-frame-size": {"width": 560, "height": 420}
-                    },
-                },
-            }
-            return Message(
-                content=TextContent(text=json.dumps(response_data, ensure_ascii=False)),
-                role=MessageRole.AGENT,
-            )
-        elif tool_name == "query_employee_trend_lazy":
-            if mode == "mcp":
-                mcp_span = sse_logger.emit_request(
-                    "SG-Agent", "MCP-Server", "mcp-tool-call",
-                    params={"tool": "query_employee_trend_lazy"},
-                )
-                mcp_result = _run_async(_call_mcp_tool("query_employee_trend_lazy"))
-                resource_uri = mcp_result.get("_meta", {}).get("ui", {}).get("resourceUri", "ui://stargate/employee-trend-lazy")
-                sse_logger.emit_response(
-                    mcp_span, "MCP-Server", "SG-Agent", "mcp-tool-result",
-                    result={"resourceUri": resource_uri},
-                )
-                biz_span = sse_logger.emit_request("SG-Agent", "BusinessAPI", "http", params={"path": "GET /api/employee/trend (token only)"})
-                trend_resp = _run_async(_fetch_employee_trend())
-                sse_logger.emit_response(biz_span, "BusinessAPI", "SG-Agent", "http", result={"token": "ok"})
-                tool_result = {
-                    "content": [{"type": "text", "text": "正在为您准备员工趋势数据，请稍候..."}],
-                    "token": trend_resp["token"],
-                }
-            else:
-                rc_span = sse_logger.emit_request("SG-Agent", "ResourceCenter", "http", params={"path": "GET /api/components/EmployeeChart"})
-                component_info = _run_async(_fetch_component_info())
-                sse_logger.emit_response(rc_span, "ResourceCenter", "SG-Agent", "http", result={"componentName": component_info.get("componentName", "")})
-                card_id = card_cache.put(
-                    component_name="EmployeeChartLazy",
-                    container_name=component_info.get("containerName", component_info["componentName"]),
-                    remote_entry_url=component_info["remoteEntryUrl"],
-                    props={},
-                )
-                resource_uri = f"ui://stargate/card/{card_id}"
-                sse_logger.emit("SG-Agent", "CF-Agent", "card-ready", resource_uri)
-                biz_span = sse_logger.emit_request("SG-Agent", "BusinessAPI", "http", params={"path": "GET /api/employee/trend (token only)"})
-                trend_resp = _run_async(_fetch_employee_trend())
-                sse_logger.emit_response(biz_span, "BusinessAPI", "SG-Agent", "http", result={"token": "ok"})
-                tool_result = {
-                    "content": [{"type": "text", "text": "正在为您准备员工趋势数据，请稍候..."}],
-                    "token": trend_resp["token"],
-                }
-            response_data = {
-                "text": "正在为您准备员工趋势数据，请稍候...",
-                "mcp_ui_resource": {
-                    "kind": "mcp_ui_resource",
-                    "resourceUri": resource_uri,
-                    "toolName": "query_employee_trend_lazy",
-                    "toolResult": tool_result,
-                    "uiMetadata": {
-                        "preferred-frame-size": {"width": 560, "height": 420}
-                    },
-                },
-            }
-            return Message(
-                content=TextContent(text=json.dumps(response_data, ensure_ascii=False)),
-                role=MessageRole.AGENT,
-            )
-        else:
-            return Message(
-                content=TextContent(text=json.dumps({"text": "抱歉，我目前只支持查询员工趋势数据。"}, ensure_ascii=False)),
-                role=MessageRole.AGENT,
-            )
-
-
-def _start_a2a_flask():
-    from flask import Flask
-    flask_app = Flask(__name__)
-    agent_card = AgentCard(
-        name="stargate-agent",
-        description="Stargate A2A Agent with MCP-UI support",
-        url=f"http://localhost:{A2A_PORT}",
-        version="0.1.0",
-    )
-    a2a_server = StargateA2AServer(agent_card=agent_card)
-    a2a_server.setup_routes(flask_app)
-    flask_app.run(host="0.0.0.0", port=A2A_PORT, debug=False, use_reloader=False)
+def _start_a2a_server():
+    """Start A2A SDK server on port 3011"""
+    import uvicorn
+    from stargate_agent.a2a_server import get_a2a_app
+    
+    a2a_app = get_a2a_app()
+    uvicorn.run(a2a_app, host="0.0.0.0", port=A2A_PORT, log_level="info")
 
 
 def main():
     import uvicorn
     import threading
 
-    t = threading.Thread(target=_start_a2a_flask, daemon=True)
+    # Start A2A server in background thread
+    t = threading.Thread(target=_start_a2a_server, daemon=True)
     t.start()
 
+    # Run FastAPI app in main thread
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 if __name__ == "__main__":
     main()

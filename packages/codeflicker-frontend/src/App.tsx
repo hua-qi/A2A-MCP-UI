@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { ChatMessage as ChatMessageType, MessagePart } from './types';
 import { ChatMessage } from './components/ChatMessage';
-import { SequenceDiagram } from './components/SequenceDiagram';
 import { ResizableDivider } from './components/ResizableDivider';
+import { SequenceDiagram } from './components/SequenceDiagram';
 import { useEventLog } from './hooks/useEventLog';
 
 let msgIdCounter = 0;
@@ -11,22 +11,28 @@ const newId = () => String(++msgIdCounter);
 const MIN_DIAGRAM_HEIGHT = 120;
 const MAX_DIAGRAM_HEIGHT_RATIO = 0.5;
 
+interface StreamEvent {
+  type: 'status' | 'complete' | 'error';
+  state?: string;
+  message?: string;
+  result?: any;
+  code?: number;
+}
+
 export const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessageType[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [mode, setMode] = useState<'endpoint' | 'mcp'>('endpoint');
   const [diagramHeight, setDiagramHeight] = useState(240);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  const eventEntries = useEventLog([
-    'http://localhost:3002/events',
-    'http://localhost:3001/events',
-  ]);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const eventEntries = useEventLog(['/events']);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, statusText]);
 
   useEffect(() => {
     fetch('/mode').then((r) => r.json()).then((d) => {
@@ -55,6 +61,7 @@ export const App: React.FC = () => {
     if (!finalText || loading) return;
     setInput('');
     setLoading(true);
+    setStatusText('');
 
     const userMsg: ChatMessageType = {
       id: newId(),
@@ -64,34 +71,111 @@ export const App: React.FC = () => {
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      const res = await fetch('/chat', {
+      // Create SSE connection for streaming
+      abortControllerRef.current = new AbortController();
+      
+      const response = await fetch('/chat-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: finalText }),
+        body: JSON.stringify({ message: finalText, mode }),
+        signal: abortControllerRef.current.signal,
       });
-      const data = await res.json();
-      const parts: MessagePart[] = (data.parts ?? []).map((p: any) => {
-        if (p.kind === 'text') return { kind: 'text' as const, text: p.text };
-        if (p.kind === 'mcp_ui_resource') return {
-          kind: 'mcp_ui_resource' as const,
-          resourceUri: p.resourceUri,
-          toolName: p.toolName,
-          toolResult: p.toolResult,
-          uiMetadata: p.uiMetadata,
-        };
-        return { kind: 'text' as const, text: JSON.stringify(p) };
-      });
-      const agentMsg: ChatMessageType = { id: newId(), role: 'agent', parts };
-      setMessages((prev) => [...prev, agentMsg]);
-    } catch {
-      setMessages((prev) => [...prev, {
-        id: newId(), role: 'agent',
-        parts: [{ kind: 'text', text: '请求失败，请检查服务是否启动。' }],
-      }]);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim() === '') continue;
+          
+          // Parse SSE format: event: xxx\ndata: {...}
+          if (line.startsWith('data: ')) {
+            try {
+              const data: StreamEvent = JSON.parse(line.slice(6));
+              
+              switch (data.type) {
+                case 'status':
+                  setStatusText(data.message || '');
+                  break;
+                  
+                case 'complete':
+                  setStatusText('');
+                  const parts = parseResponseParts(data.result);
+                  const agentMsg: ChatMessageType = { 
+                    id: newId(), 
+                    role: 'agent', 
+                    parts 
+                  };
+                  setMessages((prev) => [...prev, agentMsg]);
+                  break;
+                  
+                case 'error':
+                  setStatusText('');
+                  setMessages((prev) => [...prev, {
+                    id: newId(), 
+                    role: 'agent',
+                    parts: [{ kind: 'text', text: `错误: ${data.message}` }],
+                  }]);
+                  break;
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', line, e);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name !== 'AbortError') {
+        setMessages((prev) => [...prev, {
+          id: newId(), 
+          role: 'agent',
+          parts: [{ kind: 'text', text: '请求失败，请检查服务是否启动。' }],
+        }]);
+      }
     } finally {
       setLoading(false);
+      setStatusText('');
+      abortControllerRef.current = null;
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     }
+  };
+
+  const parseResponseParts = (result: any): MessagePart[] => {
+    if (!result) return [{ kind: 'text', text: '无响应数据' }];
+    
+    const parts: MessagePart[] = [];
+    
+    if (result.text) {
+      parts.push({ kind: 'text', text: result.text });
+    }
+    
+    if (result.mcp_ui_resource) {
+      parts.push({
+        kind: 'mcp_ui_resource',
+        resourceUri: result.mcp_ui_resource.resourceUri,
+        toolName: result.mcp_ui_resource.toolName,
+        toolResult: result.mcp_ui_resource.toolResult,
+        uiMetadata: result.mcp_ui_resource.uiMetadata,
+      });
+    }
+    
+    if (parts.length === 0) {
+      parts.push({ kind: 'text', text: JSON.stringify(result) });
+    }
+    
+    return parts;
   };
 
   return (
@@ -133,7 +217,14 @@ export const App: React.FC = () => {
               onLayout={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
             />
           ))}
-          {loading && <div style={{ color: '#888', padding: '8px 0' }}>思考中...</div>}
+          {statusText && (
+            <div style={{ color: '#0084ff', padding: '8px 0', fontStyle: 'italic' }}>
+              {statusText}
+            </div>
+          )}
+          {loading && !statusText && (
+            <div style={{ color: '#888', padding: '8px 0' }}>思考中...</div>
+          )}
           <div ref={bottomRef} />
         </div>
         <div style={{ padding: 12, borderTop: '1px solid #e0e0e0', display: 'flex', gap: 8, flexShrink: 0 }}>
@@ -155,7 +246,7 @@ export const App: React.FC = () => {
         </div>
       </div>
       <ResizableDivider onResize={handleResize} />
-      <div style={{ height: diagramHeight, flexShrink: 0 }}>
+      <div style={{ height: diagramHeight, flexShrink: 0, borderTop: '1px solid #e0e0e0', background: '#f5f5f5' }}>
         <SequenceDiagram entries={eventEntries} />
       </div>
     </div>
